@@ -24,14 +24,14 @@ from telegram.ext import (
 # всё ещё не отозваны — сделайте это в @BotFather и в кабинете OpenRouter,
 # они были показаны в открытом чате.
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8951677948:AAF_iNm9bExQ7JVvweYGzp_KScQwYDwdx1g")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "PUT_YOUR_NEW_BOT_TOKEN_HERE")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "PUT_YOUR_NEW_OPENROUTER_KEY_HERE")
 
 # --- AdsGram ---
 # blockid и token берутся из личного кабинета AdsGram (https://partner.adsgram.ai)
 # blockid — только числовая часть, БЕЗ префикса "bot-"
-ADSGRAM_BLOCK_ID = os.getenv("ADSGRAM_BLOCK_ID", "47499")
-ADSGRAM_TOKEN = os.getenv("ADSGRAM_TOKEN", "72adc6ac8da94726b9dca86022b36eec")
+ADSGRAM_BLOCK_ID = os.getenv("ADSGRAM_BLOCK_ID", "")
+ADSGRAM_TOKEN = os.getenv("ADSGRAM_TOKEN", "")
 ADSGRAM_LANGUAGE = os.getenv("ADSGRAM_LANGUAGE", "ru")
 
 DEFAULT_ATTEMPTS = 3
