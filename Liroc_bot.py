@@ -236,7 +236,7 @@ async def handle_chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     solution = get_ai_solution(
         update.message.text,
-        "Ты — ИИ-помощник в Telegram-чате. Отвечай кратко и по делу.",
+        "Ты — ИИ-помощник в Telegram-чате. Отвечай кратко и по делу.Пиши форматированный текст ДЛЯ ЧАТА. Категорически ЗАПРЕЩЕНО использовать LaTeX, знаки \\(, \\), \\[ \\], \\log, \\approx, \\frac. Пиши математические формулы обычными символами Unicode (например: log_a(b) = x, a^x = b, e ≈ 2.718, lg, ln).",
     )
 
     await status_msg.edit_text(
