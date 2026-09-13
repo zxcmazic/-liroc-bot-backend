@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import time
 
 from aiohttp import web
 import requests
@@ -36,6 +37,12 @@ ADSGRAM_LANGUAGE = os.getenv("ADSGRAM_LANGUAGE", "ru")
 
 DEFAULT_ATTEMPTS = 3
 REWARD_ATTEMPTS = 3
+# Бесплатные попытки восстанавливаются сами по себе: +1 попытка в час,
+# но не больше DEFAULT_ATTEMPTS одновременно. Это и есть "базовая
+# функциональность без рекламы", которую требует модерация AdsGram.
+# Реклама остаётся честным БОНУСОМ (даёт REWARD_ATTEMPTS сверху, сразу,
+# не дожидаясь регенерации), а не единственным способом пользоваться ботом.
+REGEN_INTERVAL_SECONDS = 60 * 60  # 1 час на +1 попытку
 # Этот порт нужен ТОЛЬКО для одного эндпоинта — подтверждения награды от AdsGram
 # (см. api_adsgram_reward ниже). Сам чат бота от порта не зависит.
 PORT = int(os.getenv("PORT", 8080))
@@ -43,10 +50,53 @@ PORT = int(os.getenv("PORT", 8080))
 
 logging.basicConfig(level=logging.INFO)
 
-# Общий словарь попыток: {user_id: count}
+# Общий словарь попыток: {user_id: {"count": int, "last_regen": float}}
 # ПРИМЕЧАНИЕ: это in-memory хранилище — при перезапуске бота все данные теряются.
 # Для продакшена лучше использовать SQLite/Redis/Postgres.
 user_attempts = {}
+
+
+def get_attempts(user_id: int) -> int:
+    """
+    Возвращает текущее число попыток пользователя, автоматически начисляя
+    +1 бесплатную попытку за каждый полный час — но не больше DEFAULT_ATTEMPTS
+    одновременно. Награда за рекламу (REWARD_ATTEMPTS) может увести счётчик
+    выше этого предела — это нормальный бонус, а не баг.
+    """
+    now = time.time()
+    record = user_attempts.get(user_id)
+
+    if record is None:
+        user_attempts[user_id] = {"count": DEFAULT_ATTEMPTS, "last_regen": now}
+        return DEFAULT_ATTEMPTS
+
+    if record["count"] < DEFAULT_ATTEMPTS:
+        elapsed = now - record["last_regen"]
+        regen_units = int(elapsed // REGEN_INTERVAL_SECONDS)
+        if regen_units > 0:
+            record["count"] = min(DEFAULT_ATTEMPTS, record["count"] + regen_units)
+            record["last_regen"] += regen_units * REGEN_INTERVAL_SECONDS
+    else:
+        # держим last_regen свежим, пока попыток и так достаточно,
+        # чтобы не накапливать "часы простоя" на будущее
+        record["last_regen"] = now
+
+    return record["count"]
+
+
+def add_attempts(user_id: int, delta: int) -> int:
+    get_attempts(user_id)  # убедиться, что запись существует и регенерация учтена
+    user_attempts[user_id]["count"] += delta
+    return user_attempts[user_id]["count"]
+
+
+def seconds_until_next_attempt(user_id: int) -> int:
+    """Сколько секунд осталось до следующей бесплатной +1 попытки."""
+    record = user_attempts.get(user_id)
+    if not record:
+        return 0
+    elapsed = time.time() - record["last_regen"]
+    return max(0, int(REGEN_INTERVAL_SECONDS - elapsed))
 
 
 def get_ai_solution(prompt: str, system_prompt: str) -> str:
@@ -156,30 +206,32 @@ async def send_adsgram_ad(update: Update, tgid: int) -> bool:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if user_id not in user_attempts:
-        user_attempts[user_id] = DEFAULT_ATTEMPTS
+    attempts = get_attempts(user_id)
 
     await update.message.reply_text(
         f"Привет! Я твой ИИ-помощник в чате.\n\n"
-        f"⚡ Доступно попыток: {user_attempts[user_id]}\n"
+        f"⚡ Доступно попыток: {attempts}\n"
+        f"Попытки восстанавливаются сами по себе: +1 каждый час (максимум {DEFAULT_ATTEMPTS}), "
+        f"либо посмотри рекламу и получи бонус сразу.\n"
         f"Просто напиши мне вопрос!"
     )
 
 
 async def handle_chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if user_id not in user_attempts:
-        user_attempts[user_id] = DEFAULT_ATTEMPTS
+    attempts = get_attempts(user_id)
 
-    if user_attempts[user_id] <= 0:
+    if attempts <= 0:
+        minutes_left = max(1, seconds_until_next_attempt(user_id) // 60)
         await update.message.reply_text(
-            "❌ Закончились бесплатные попытки!\n"
-            "Посмотрите рекламу ниже, чтобы получить ещё немного энергии ⚡"
+            "❌ Закончились попытки!\n"
+            f"Следующая бесплатная попытка придёт примерно через {minutes_left} мин., "
+            f"либо посмотрите рекламу ниже и получите бонус прямо сейчас ⚡"
         )
         await send_adsgram_ad(update, user_id)
         return
 
-    user_attempts[user_id] -= 1
+    add_attempts(user_id, -1)
     status_msg = await update.message.reply_text("🧠 ИИ в чате думает...")
 
     solution = get_ai_solution(
@@ -188,7 +240,7 @@ async def handle_chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
 
     await status_msg.edit_text(
-        f"{solution}\n\n📊 _Осталось энергии: {user_attempts[user_id]}_",
+        f"{solution}\n\n📊 _Осталось энергии: {get_attempts(user_id)}_",
         parse_mode=ParseMode.MARKDOWN,
     )
 
@@ -214,21 +266,21 @@ async def api_adsgram_reward(request):
     except ValueError:
         return web.json_response({"status": "error", "reason": "invalid tgid"}, status=400)
 
-    user_attempts[user_id] = user_attempts.get(user_id, DEFAULT_ATTEMPTS) + REWARD_ATTEMPTS
+    new_total = add_attempts(user_id, REWARD_ATTEMPTS)
     logging.info(f"AdsGram reward granted to user {user_id}: +{REWARD_ATTEMPTS} attempts")
 
     bot_app: Application = request.app["bot_app"]
     try:
         await bot_app.bot.send_message(
             chat_id=user_id,
-            text=f"🎉 Начислено +{REWARD_ATTEMPTS} ⚡ за просмотр рекламы! Всего: {user_attempts[user_id]}",
+            text=f"🎉 Начислено +{REWARD_ATTEMPTS} ⚡ за просмотр рекламы! Всего: {new_total}",
         )
     except Exception as e:
         # Не критично для самого начисления — пользователь просто не получит уведомление,
         # например если он ни разу не писал боту.
         logging.warning(f"Could not notify user {user_id} about reward: {e}")
 
-    return web.json_response({"status": "ok", "attempts": user_attempts[user_id]})
+    return web.json_response({"status": "ok", "attempts": new_total})
 
 
 async def main():
